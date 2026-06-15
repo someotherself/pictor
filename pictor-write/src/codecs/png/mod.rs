@@ -28,11 +28,12 @@ pub struct EncodeRequest<'a> {
 }
 
 impl<'a> EncodeRequest<'a> {
+    /// Calculates the total buffer size needed after the filters get applied
     fn filtered_size(&self) -> usize {
         (self.width as usize * self.color_type.pixel_size() as usize + 1) * self.height as usize
     }
 
-    pub(crate) fn current_row_adjusted(&self, scanline: u32) -> usize {
+    fn current_row_adjusted(&self, scanline: u32) -> usize {
         let scanline = scanline as usize;
         let height = self.height as usize;
 
@@ -44,11 +45,53 @@ impl<'a> EncodeRequest<'a> {
         self.stride * y
     }
 
+    #[cfg(feature = "rayon")]
+    pub fn filter_scanlines(&self) -> PictorResult<FilteredPng> {
+        use rayon::{
+            iter::{IndexedParallelIterator, ParallelIterator},
+            slice::ParallelSliceMut,
+        };
+
+        let filtered_stride = self.stride + 1;
+        let mut out = Vec::new();
+        out.resize_with(self.filtered_size(), || 0_u8);
+
+        out.par_chunks_mut(filtered_stride)
+            .enumerate()
+            .for_each_init(
+                || vec![0u8; filtered_stride],
+                |scratch, (scanline, out_line)| {
+                    let in_line_start = self.current_row_adjusted(scanline as u32);
+                    let map = if scanline == 0 {
+                        PngFilter::MAPPING_FIRST_ROW
+                    } else {
+                        PngFilter::MAPPING
+                    };
+
+                    if let Some(force_filter) = self.filter {
+                        FilteredPng::filter_fast_path(
+                            self,
+                            in_line_start,
+                            force_filter,
+                            map,
+                            out_line,
+                        );
+                    } else {
+                        // add rayon
+                        FilteredPng::filter_slow_path(self, in_line_start, map, out_line, scratch);
+                    }
+                },
+            );
+        FilteredPng::new(self, out)
+    }
+
+    #[cfg(not(feature = "rayon"))]
     pub fn filter_scanlines(&self) -> PictorResult<FilteredPng> {
         let mut out_line_start: usize = 0;
         let filtered_stride = self.stride + 1;
         let mut out = Vec::new();
         out.resize_with(self.filtered_size(), || 0_u8);
+        let mut scratch = vec![0u8; filtered_stride];
 
         for scanline in 0..self.height {
             let in_line_start = self.current_row_adjusted(scanline);
@@ -63,7 +106,7 @@ impl<'a> EncodeRequest<'a> {
             if let Some(force_filter) = self.filter {
                 FilteredPng::filter_fast_path(self, in_line_start, force_filter, map, out_line);
             } else {
-                FilteredPng::filter_slow_path(self, in_line_start, map, out_line);
+                FilteredPng::filter_slow_path(self, in_line_start, map, out_line, &mut scratch);
             }
 
             out_line_start = out_line_end;

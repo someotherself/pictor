@@ -184,18 +184,20 @@ impl FilteredPng {
         line_start: usize,
         filter_map: [PngFilter; 5],
         out_line: &mut [u8],
+        scratch: &mut [u8],
     ) {
         let mut best_filter = PngFilter::None;
         let mut best_filter_value: i32 = i32::MAX;
         let target = &mut out_line[1..]; // skip the filter byte
         for filter in filter_map {
-            Self::encode_line(png, line_start, target, filter);
+            Self::encode_line(png, line_start, scratch, filter);
             let est: i32 = target.iter().map(|&b| (b as i8 as i32).abs()).sum();
             if est < best_filter_value {
                 best_filter = filter;
                 best_filter_value = est;
+                target.copy_from_slice(scratch);
             }
         }
-        Self::encode_line(png, line_start, out_line, best_filter);
+        out_line[0] = best_filter.id();
     }
 }

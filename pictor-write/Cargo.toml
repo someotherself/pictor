@@ -6,9 +6,11 @@ edition = "2021"
 [features]
 default = ["flate2-compress"]
 
-flate2-compress = ["dep:flate2"]
-stb-compress = []
+flate2-compress = ["dep:flate2"]    # stb deflate is NOT used by default
+stb-compress = []                   # enable the zlib implementation from stb
+rayon = ["dep:rayon"]
 
 [dependencies]
-flate2 = { version = "1.1.9", optional = true }
 pictor-core = { version = "0.1.0", path = "../pictor-core" }
+flate2 = { version = "1.1.9", optional = true }
+rayon = { version = "1.12.0", optional = true }
