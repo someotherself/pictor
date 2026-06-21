@@ -2,6 +2,7 @@ pub mod codecs;
 
 pub type PictorResult<T> = Result<T, PictorError>;
 
+#[non_exhaustive]
 pub enum PictorError {
     InvalidArgument {
         msg: &'static str,
