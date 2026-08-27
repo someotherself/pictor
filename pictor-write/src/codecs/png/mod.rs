@@ -4,11 +4,12 @@ pub mod deflate;
 pub mod filter;
 
 use pictor_core::{
-    codecs::{
-        color_type::ColorType,
-        png::{filters::PngFilter, CRC_TABLE},
-    },
     PictorResult,
+    codecs::{
+        color_type::{BitDepth, ColorType},
+        png::{PNG_SIG, filters::PngFilter, generate_crc},
+    },
+    samples::{Sample, SampleStorage},
 };
 
 use crate::codecs::png::{
@@ -16,21 +17,93 @@ use crate::codecs::png::{
     filter::FilteredPng,
 };
 
-pub struct EncodeRequest<'a> {
-    width: u32,
-    height: u32,
-    stride: usize,
-    color_type: ColorType,
-    compression_level: CompressionLevel,
-    filter: Option<PngFilter>,
-    vertical_flip: bool,
-    data: &'a [u8],
+pub struct PngEncodingRequest<'a> {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) stride: usize,
+    pub(crate) color_type: ColorType,
+    pub(crate) bit_depth: BitDepth,
+    pub(crate) compression_level: CompressionLevel,
+    pub(crate) filter: Option<PngFilter>,
+    pub(crate) vertical_flip: bool,
+    pub(crate) data: SampleStorage<'a, u8>, // must always be raw bytes for filtering
 }
 
-impl<'a> EncodeRequest<'a> {
+impl<'a> PngEncodingRequest<'a> {
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    #[inline]
+    pub fn color_type(&self) -> ColorType {
+        self.color_type
+    }
+
+    #[inline]
+    pub fn compression_level(&self) -> CompressionLevel {
+        self.compression_level
+    }
+
+    #[inline]
+    pub fn filter(&self) -> Option<PngFilter> {
+        self.filter
+    }
+
+    #[inline]
+    pub fn vertical_flip(&self) -> bool {
+        self.vertical_flip
+    }
+
+    // #[inline]
+    // pub fn data_raw(&self) -> &[u8] {
+    //     &self.data
+    // }
+
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn new<S: Sample>(
+        width: u32,
+        height: u32,
+        stride: usize,
+        color_type: ColorType,
+        bit_depth: BitDepth,
+        compression_level: CompressionLevel,
+        filter: Option<PngFilter>,
+        vertical_flip: bool,
+        data: SampleStorage<'a, S>,
+    ) -> Self {
+        let data = S::into_be_bytes(data);
+        Self {
+            width,
+            height,
+            stride,
+            color_type,
+            bit_depth,
+            compression_level,
+            filter,
+            vertical_flip,
+            data,
+        }
+    }
+
     /// Calculates the total buffer size needed after the filters get applied
     fn filtered_size(&self) -> usize {
-        (self.width as usize * self.color_type.pixel_size() as usize + 1) * self.height as usize
+        (self.width as usize
+            * (self.color_type.comp_per_pix() as usize)
+            * self.bit_depth.bytes_per_comp() as usize
+            + 1)
+            * self.height as usize
     }
 
     fn current_row_adjusted(&self, scanline: u32) -> usize {
@@ -46,7 +119,7 @@ impl<'a> EncodeRequest<'a> {
     }
 
     #[cfg(feature = "rayon")]
-    pub fn filter_scanlines(&self) -> PictorResult<FilteredPng> {
+    pub fn filter_scanlines(&self) -> PictorResult<FilteredPng<S>> {
         use rayon::{
             iter::{IndexedParallelIterator, ParallelIterator},
             slice::ParallelSliceMut,
@@ -59,7 +132,7 @@ impl<'a> EncodeRequest<'a> {
         out.par_chunks_mut(filtered_stride)
             .enumerate()
             .for_each_init(
-                || vec![0u8; filtered_stride],
+                || vec![0u8; self.stride],
                 |scratch, (scanline, out_line)| {
                     let in_line_start = self.current_row_adjusted(scanline as u32);
                     let map = if scanline == 0 {
@@ -77,7 +150,6 @@ impl<'a> EncodeRequest<'a> {
                             out_line,
                         );
                     } else {
-                        // add rayon
                         FilteredPng::filter_slow_path(self, in_line_start, map, out_line, scratch);
                     }
                 },
@@ -89,9 +161,8 @@ impl<'a> EncodeRequest<'a> {
     pub fn filter_scanlines(&self) -> PictorResult<FilteredPng> {
         let mut out_line_start: usize = 0;
         let filtered_stride = self.stride + 1;
-        let mut out = Vec::new();
-        out.resize_with(self.filtered_size(), || 0_u8);
-        let mut scratch = vec![0u8; filtered_stride];
+        let mut out = vec![0_u8; self.filtered_size()];
+        let mut scratch = vec![0u8; self.stride];
 
         for scanline in 0..self.height {
             let in_line_start = self.current_row_adjusted(scanline);
@@ -114,6 +185,14 @@ impl<'a> EncodeRequest<'a> {
 
         FilteredPng::new(self, out)
     }
+
+    pub fn encode<W: Write>(&self, writer: &mut W) -> PictorResult<()> {
+        let filtered = self.filter_scanlines()?;
+        let zlib = filtered.compress()?;
+        let encoded = zlib.encode_in_memory_internal()?;
+        writer.write_all(&encoded.0)?;
+        Ok(())
+    }
 }
 
 pub struct PngBuilder {
@@ -122,6 +201,8 @@ pub struct PngBuilder {
     stride: Option<usize>,
     compression: CompressionLevel,
     color_type: ColorType,
+    #[allow(unused)]
+    bit_depth: BitDepth,
     vertical_flip: bool,
     filter: Option<PngFilter>,
 }
@@ -133,6 +214,7 @@ impl PngBuilder {
             height,
             stride: None,
             color_type,
+            bit_depth: BitDepth::U8, // Temporaty value
             compression: CompressionLevel::Default,
             vertical_flip: false,
             filter: None,
@@ -159,39 +241,26 @@ impl PngBuilder {
         self
     }
 
-    pub fn create_request<'a>(&mut self, data: &'a [u8]) -> PictorResult<EncodeRequest<'a>> {
-        self.new_png_request(data)
-    }
-
-    pub fn filter_scanlines(&mut self, data: &[u8]) -> PictorResult<FilteredPng> {
-        let req = self.new_png_request(data)?;
-        req.filter_scanlines()
-    }
-
-    pub fn compress(&mut self, data: &[u8]) -> PictorResult<DeflatedPng> {
-        let req = self.new_png_request(data)?;
-        let filtered = req.filter_scanlines()?;
-        filtered.compress()
-    }
-
-    pub fn encode_in_memory(&mut self, data: &[u8]) -> PictorResult<EncodedPng> {
-        let req = self.new_png_request(data)?;
-        let filtered = req.filter_scanlines()?;
-        let zlib = filtered.compress()?;
-        zlib.encode_in_memory_internal()
-    }
-
-    fn new_png_request<'a>(&self, data: &'a [u8]) -> PictorResult<EncodeRequest<'a>> {
-        let stride = if let Some(stride) = self.stride {
-            stride
+    fn new_png_request<'a, S: Sample>(
+        &self,
+        data: SampleStorage<'a, S>,
+    ) -> PictorResult<PngEncodingRequest<'a>> {
+        let stride = self.stride.unwrap_or(usize::try_from(
+            self.width * self.color_type.comp_per_pix() as u32 * S::BYTES_PER_SAMPLE as u32,
+        )?);
+        let bit_depth = if S::BYTES_PER_SAMPLE == 1 {
+            BitDepth::U8
         } else {
-            usize::try_from(self.width * self.color_type.pixel_size() as u32)?
+            BitDepth::U16
         };
-        Ok(EncodeRequest {
+        let data = S::into_be_bytes(data);
+
+        Ok(PngEncodingRequest {
             width: self.width,
             height: self.height,
             stride,
             color_type: self.color_type,
+            bit_depth,
             compression_level: self.compression,
             filter: self.filter,
             vertical_flip: self.vertical_flip,
@@ -199,8 +268,8 @@ impl PngBuilder {
         })
     }
 
-    pub fn encode_with<W: Write>(&self, data: &[u8], writer: &mut W) -> PictorResult<()> {
-        let png_req = self.new_png_request(data)?;
+    pub fn encode_with<W: Write, S: Sample>(&self, data: &[S], writer: &mut W) -> PictorResult<()> {
+        let png_req = self.new_png_request(SampleStorage::Borrow { data })?;
 
         let filtered = png_req.filter_scanlines()?;
 
@@ -214,7 +283,7 @@ impl PngBuilder {
         Ok(())
     }
 
-    pub fn encode(&mut self, data: &[u8], path: &Path) -> PictorResult<()> {
+    pub fn encode<S: Sample, P: AsRef<Path>>(&mut self, data: &[S], path: P) -> PictorResult<()> {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -231,13 +300,11 @@ impl EncodedPng {
     pub(crate) fn encode_in_memory(deflated: &DeflatedPng) -> PictorResult<Vec<u8>> {
         let zlib = &deflated.data;
 
-        /// PNG Signature
-        const SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-
         let out_cap = 8 + 12 + 13 + 12 + zlib.len() + 12;
         let mut out: Vec<u8> = Vec::with_capacity(out_cap);
 
-        out.extend_from_slice(&SIG);
+        // PNG signature
+        out.extend_from_slice(&PNG_SIG);
 
         // IHDR Chunk
         let ihdr_chunk_len = 13;
@@ -248,8 +315,8 @@ impl EncodedPng {
         Self::write_be_bytes(&mut out, deflated.width);
         // Height of the image in pixels
         Self::write_be_bytes(&mut out, deflated.height);
-        // Number of bits per  sample
-        out.push(8_u8);
+        // Number of bits per sample
+        out.push(deflated.bit_depth.bits_per_comp());
         // Color type byte
         out.push(deflated.color_type.id());
         // Compression method. 0 for deflate/inflate with 32768 window
@@ -259,7 +326,8 @@ impl EncodedPng {
         // Interlace method. 0 defined by the standard
         out.push(0);
         // End of chunk. Write crc32
-        Self::final_crc(&mut out, ihdr_chunk_len as usize);
+        let crc = generate_crc(&out, ihdr_chunk_len as usize);
+        Self::write_be_bytes(&mut out, crc);
 
         // IDAT Chunk. payload
         let idat_chunk_len = zlib.len();
@@ -267,33 +335,23 @@ impl EncodedPng {
         out.extend_from_slice(b"IDAT");
         out.extend_from_slice(zlib);
         // End of chunk. Write crc32
-        Self::final_crc(&mut out, idat_chunk_len);
+        let crc = generate_crc(&out, idat_chunk_len);
+        Self::write_be_bytes(&mut out, crc);
 
         // IEND Chunk
         Self::write_be_bytes(&mut out, 0); // Length of the chunk is 0
         out.extend_from_slice(b"IEND");
-        Self::final_crc(&mut out, 0);
+        let crc = generate_crc(&out, 0);
+        Self::write_be_bytes(&mut out, crc);
 
         Ok(out)
-    }
-
-    fn final_crc(out: &mut Vec<u8>, len: usize) {
-        let chunk_len = len + 4;
-        let chunk_start = out.len() - chunk_len;
-
-        let mut crc: u32 = !0;
-        for &byte in out.iter().skip(chunk_start).take(chunk_len) {
-            let index = (byte ^ (crc as u8)) as usize;
-            crc = (crc >> 8) ^ CRC_TABLE[index];
-        }
-        Self::write_be_bytes(out, !crc);
     }
 
     fn write_be_bytes(out: &mut Vec<u8>, val: u32) {
         out.extend_from_slice(&(val).to_be_bytes());
     }
 
-    pub fn write_to_file(&self, path: &Path) -> PictorResult<()> {
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> PictorResult<()> {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)

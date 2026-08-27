@@ -5,13 +5,17 @@ use std::{
 };
 
 use pictor_core::{
-    codecs::qoi::{
-        color_type::{Channels, ColorSpace},
-        idx_color_hash,
-        tags::QoiTags,
-        QoiRbga, END_MARKER,
-    },
     PictorError, PictorResult,
+    codecs::{
+        color_type::{BitDepth, ColorType},
+        qoi::{
+            END_MARKER, QoiRbga,
+            color_type::{Channels, ColorSpace},
+            idx_color_hash,
+            tags::QoiTags,
+        },
+    },
+    samples::SampleStorage,
 };
 
 #[inline]
@@ -21,36 +25,55 @@ fn read_u8<R: Read>(reader: &mut R) -> PictorResult<u8> {
     Ok(byte[0])
 }
 
-pub struct QoiDecoder {
+pub struct QoiDecodeRequest {
     width: u32,
     height: u32,
     channels: Channels,
     color_space: ColorSpace,
 }
 
-impl QoiDecoder {
-    pub fn decode_from(path: &Path, channels: Option<Channels>) -> PictorResult<DecodedQoi> {
+impl QoiDecodeRequest {
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn channels(&self) -> Channels {
+        self.channels
+    }
+
+    #[inline]
+    pub fn color_space(&self) -> ColorSpace {
+        self.color_space
+    }
+
+    pub fn decode<'a, P: AsRef<Path>>(
+        path: P,
+        channels: Option<Channels>,
+    ) -> PictorResult<DecodedQoi<'a>> {
         let file = OpenOptions::new().read(true).open(path)?;
         Self::decode_with(file, channels)
     }
-}
 
-impl QoiDecoder {
-    pub fn decode_with<R: Read>(reader: R, channels: Option<Channels>) -> PictorResult<DecodedQoi> {
+    pub fn decode_with<'a, R: Read>(
+        reader: R,
+        channels: Option<Channels>,
+    ) -> PictorResult<DecodedQoi<'a>> {
         let mut reader = BufReader::new(reader);
         let decoder = Self::read_header(&mut reader, channels)?;
-        let data = decoder.decode(&mut reader)?;
-
-        Ok(DecodedQoi {
-            width: decoder.width,
-            height: decoder.height,
-            channels: decoder.channels,
-            color_space: decoder.color_space,
-            data,
-        })
+        decoder.decode_internal(&mut reader)
     }
 
-    fn decode<R: Read>(&self, reader: &mut R) -> PictorResult<Vec<u8>> {
+    pub(crate) fn decode_internal<'a, R: Read>(
+        &self,
+        reader: &mut R,
+    ) -> PictorResult<DecodedQoi<'a>> {
         let expected_len = (self.width as usize)
             .checked_mul(self.height as usize)
             .and_then(|len| len.checked_mul(self.channels.pixel_size() as usize))
@@ -120,14 +143,26 @@ impl QoiDecoder {
             });
         }
 
-        Ok(output)
+        let data = SampleStorage::Owned { data: output };
+
+        Ok(DecodedQoi {
+            width: self.width,
+            height: self.height,
+            channels: self.channels,
+            color_space: self.color_space,
+            bit_depth: BitDepth::U8,
+            data,
+        })
     }
 
-    fn read_header<R: Read>(reader: &mut R, channels: Option<Channels>) -> PictorResult<Self> {
+    pub(crate) fn read_header<R: Read>(
+        reader: &mut R,
+        channels: Option<Channels>,
+    ) -> PictorResult<Self> {
         let mut tmp = [0u8; 14];
         reader.read_exact(&mut tmp)?;
 
-        if tmp[0..4] != [b'q', b'o', b'i', b'f'] {
+        if tmp[0..4] != *b"qoif" {
             return Err(PictorError::InvalidArgument {
                 msg: "Invalid header magic",
             });
@@ -148,10 +183,43 @@ impl QoiDecoder {
     }
 }
 
-pub struct DecodedQoi {
+pub struct DecodedQoi<'a> {
     pub width: u32,
     pub height: u32,
     pub channels: Channels,
     pub color_space: ColorSpace,
-    pub data: Vec<u8>,
+    pub bit_depth: BitDepth,
+    pub data: SampleStorage<'a, u8>,
+}
+
+impl<'a> DecodedQoi<'a> {
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn channels(&self) -> Channels {
+        self.channels
+    }
+
+    #[inline]
+    pub fn color_space(&self) -> ColorSpace {
+        self.color_space
+    }
+
+    #[inline]
+    pub fn color_type(&self) -> ColorType {
+        self.channels.into()
+    }
+
+    #[inline]
+    pub fn bit_depth(&self) -> BitDepth {
+        self.bit_depth
+    }
 }

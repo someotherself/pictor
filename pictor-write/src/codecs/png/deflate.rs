@@ -1,6 +1,9 @@
-use pictor_core::{codecs::color_type::ColorType, PictorResult};
+use pictor_core::{
+    PictorResult,
+    codecs::color_type::{BitDepth, ColorType},
+};
 
-use crate::codecs::png::{filter::FilteredPng, EncodedPng};
+use crate::codecs::png::{EncodedPng, filter::FilteredPng};
 
 #[cfg(feature = "stb-compress")]
 mod stb_array {
@@ -66,21 +69,42 @@ impl CompressionLevel {
     }
 }
 
-#[allow(dead_code)]
 pub struct DeflatedPng {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) color_type: ColorType,
     pub(crate) data: Vec<u8>,
+    pub(crate) bit_depth: BitDepth,
 }
 
 impl DeflatedPng {
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn color_type(&self) -> ColorType {
+        self.color_type
+    }
+
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
     pub(crate) fn new(filtered: &FilteredPng, data: Vec<u8>) -> Self {
         Self {
             width: filtered.width,
             height: filtered.height,
             color_type: filtered.color_type,
             data,
+            bit_depth: filtered.bit_depth,
         }
     }
 
@@ -91,7 +115,7 @@ impl DeflatedPng {
 
     #[cfg(not(feature = "stb-compress"))]
     pub(crate) fn compress(quality: u8, data: &[u8]) -> PictorResult<Vec<u8>> {
-        use flate2::{write::ZlibEncoder, Compression};
+        use flate2::{Compression, write::ZlibEncoder};
         use std::io::Write;
 
         let level = Compression::new(quality as u32);
@@ -177,10 +201,10 @@ impl DeflatedPng {
                 debug_assert!(i + best_len <= data.len());
 
                 debug_assert_eq!(
-    &data[best_match_pos..best_match_pos + best_len],
-    &data[i..i + best_len],
-    "bad match: prev={best_match_pos}, i={i}, len={best_len}, dist={best_loc_distance}"
-);
+                    &data[best_match_pos..best_match_pos + best_len],
+                    &data[i..i + best_len],
+                    "bad match: prev={best_match_pos}, i={i}, len={best_len}, dist={best_loc_distance}"
+                );
                 // Find the Deflate length code bucket
                 let mut j = 0;
                 while best_len > stb_array::LENGTH_BASE[j + 1] - 1 {

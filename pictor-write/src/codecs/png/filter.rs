@@ -1,35 +1,58 @@
 use pictor_core::{
-    codecs::{color_type::ColorType, png::filters::PngFilter},
     PictorResult,
+    codecs::{
+        color_type::{BitDepth, ColorType},
+        png::filters::PngFilter,
+    },
 };
 
 use crate::codecs::png::{
+    PngEncodingRequest,
     deflate::{CompressionLevel, DeflatedPng},
-    EncodeRequest,
 };
 
 pub struct FilteredPng {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) color_type: ColorType,
-    // pub(crate) row_len: usize, // width * pixel_size
-    // pub(crate) stride: usize,  // row_len + 1
     pub(crate) compression: CompressionLevel,
+    pub(crate) bit_depth: BitDepth,
     pub(crate) data: Vec<u8>,
 }
 
 impl FilteredPng {
-    pub(crate) fn new(png: &EncodeRequest<'_>, payload: Vec<u8>) -> PictorResult<Self> {
-        // let row_len = usize::try_from(png.width * png.color_type.pixel_size() as u32)?;
-        // let stride = row_len + 1;
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
 
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn color_type(&self) -> ColorType {
+        self.color_type
+    }
+
+    #[inline]
+    pub fn compression(&self) -> CompressionLevel {
+        self.compression
+    }
+
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub(crate) fn new(png: &PngEncodingRequest<'_>, payload: Vec<u8>) -> PictorResult<Self> {
         Ok(Self {
             width: png.width,
             height: png.height,
             color_type: png.color_type,
-            // row_len,
-            // stride,
             compression: png.compression_level,
+            bit_depth: png.bit_depth,
             data: payload,
         })
     }
@@ -41,8 +64,8 @@ impl FilteredPng {
     }
 
     #[inline]
-    fn encode_first_byte(png: &EncodeRequest<'_>, pos: usize, filter: PngFilter) -> u8 {
-        let pixels = png.data;
+    fn encode_first_byte(png: &PngEncodingRequest<'_>, pos: usize, filter: PngFilter) -> u8 {
+        let pixels = png.data.get_data();
         let byte = pixels[pos];
         let stride = png.stride;
         match filter {
@@ -64,9 +87,9 @@ impl FilteredPng {
             }
             PngFilter::Paeth => {
                 if png.vertical_flip {
-                    byte.wrapping_sub(Self::paeth_encoding(0, pixels[pos + stride], 0))
+                    byte.wrapping_sub(PngFilter::paeth_predictor(0, pixels[pos + stride], 0))
                 } else {
-                    byte.wrapping_sub(Self::paeth_encoding(0, pixels[pos - stride], 0))
+                    byte.wrapping_sub(PngFilter::paeth_predictor(0, pixels[pos - stride], 0))
                 }
             }
             PngFilter::AverageFirstRow => byte,
@@ -75,11 +98,12 @@ impl FilteredPng {
     }
 
     #[inline]
-    fn encode_byte(png: &EncodeRequest<'_>, pos: usize, filter: PngFilter) -> u8 {
-        let pixels = png.data;
+    fn encode_byte(png: &PngEncodingRequest<'_>, pos: usize, filter: PngFilter) -> u8 {
+        let pixels = png.data.get_data();
         let byte = pixels[pos];
         let stride = png.stride;
-        let comp = png.color_type.pixel_size() as usize;
+        let comp =
+            (png.color_type.comp_per_pix() as usize) * png.bit_depth.bytes_per_comp() as usize;
         let left = pixels[pos - comp];
         match filter {
             PngFilter::None => byte,
@@ -101,13 +125,13 @@ impl FilteredPng {
             }
             PngFilter::Paeth => {
                 if png.vertical_flip {
-                    byte.wrapping_sub(Self::paeth_encoding(
+                    byte.wrapping_sub(PngFilter::paeth_predictor(
                         left,
                         pixels[pos + stride],
                         pixels[pos + stride - comp],
                     ))
                 } else {
-                    byte.wrapping_sub(Self::paeth_encoding(
+                    byte.wrapping_sub(PngFilter::paeth_predictor(
                         left,
                         pixels[pos - stride],
                         pixels[pos - stride - comp],
@@ -115,36 +139,18 @@ impl FilteredPng {
                 }
             }
             PngFilter::AverageFirstRow => byte.wrapping_sub((left as u16 / 2) as u8),
-            PngFilter::PaethFirstRow => byte.wrapping_sub(Self::paeth_encoding(left, 0, 0)),
-        }
-    }
-
-    /// a = value of pos - 1
-    /// b = value of pos - stride
-    /// c = value of pos - 1 - stride
-    /// pos = position of byte being encoded
-    #[inline]
-    pub(crate) fn paeth_encoding(a: u8, b: u8, c: u8) -> u8 {
-        let p = a.wrapping_add(b).wrapping_sub(c);
-        let pa = p.abs_diff(a);
-        let pb = p.abs_diff(b);
-        let pc = p.abs_diff(c);
-        if pa <= pb && pa <= pc {
-            a
-        } else if pb <= pc {
-            b
-        } else {
-            c
+            PngFilter::PaethFirstRow => byte.wrapping_sub(PngFilter::paeth_predictor(left, 0, 0)),
         }
     }
 
     fn encode_line(
-        png: &EncodeRequest<'_>,
+        png: &PngEncodingRequest<'_>,
         line_start: usize,
         out_line: &mut [u8],
         filter: PngFilter,
     ) {
-        let comp = png.color_type.pixel_size() as usize;
+        let comp =
+            (png.color_type.comp_per_pix() as usize) * png.bit_depth.bytes_per_comp() as usize;
         // Handle the first pixel in the scan line
         for (i, item) in out_line.iter_mut().enumerate().take(comp) {
             *item = FilteredPng::encode_first_byte(png, line_start + i, filter);
@@ -156,7 +162,7 @@ impl FilteredPng {
     }
 
     pub(crate) fn filter_fast_path(
-        png: &EncodeRequest<'_>,
+        png: &PngEncodingRequest<'_>,
         line_start: usize,
         force_filter: PngFilter,
         filter_map: [PngFilter; 5],
@@ -166,7 +172,7 @@ impl FilteredPng {
         match force_filter {
             PngFilter::None => {
                 for (i, item) in target.iter_mut().enumerate() {
-                    *item = png.data[line_start + i];
+                    *item = png.data.get_data()[line_start + i];
                 }
             }
             _ => {
@@ -180,7 +186,7 @@ impl FilteredPng {
     }
 
     pub(crate) fn filter_slow_path(
-        png: &EncodeRequest<'_>,
+        png: &PngEncodingRequest<'_>,
         line_start: usize,
         filter_map: [PngFilter; 5],
         out_line: &mut [u8],

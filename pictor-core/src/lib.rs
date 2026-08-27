@@ -1,4 +1,5 @@
 pub mod codecs;
+pub mod samples;
 
 pub type PictorResult<T> = Result<T, PictorError>;
 
@@ -18,6 +19,9 @@ pub enum PictorError {
         op: &'static str, // "frames * channels"
     },
     FileSizeExceeded,
+    InvalidFormat {
+        msg: String,
+    },
 }
 
 impl std::fmt::Debug for PictorError {
@@ -28,6 +32,7 @@ impl std::fmt::Debug for PictorError {
             Self::IntegerError { err } => write!(f, "Integer Error: {err}"),
             Self::MulOverflow { op } => write!(f, "{op}"),
             Self::FileSizeExceeded => write!(f, "Maximum file size exceeded"),
+            Self::InvalidFormat { msg } => write!(f, "Does not match expected format: {msg}"),
         }
     }
 }

@@ -50,7 +50,7 @@ pub const AC_CHROMIN_VALUES: [u8; 162] = [
     0xf9, 0xfa,
 ];
 
-// Huffman tables
+//  Jpeg Huffman tables
 pub const YDC_HT: [[u16; 2]; 12] = [
     [0, 2],
     [2, 3],

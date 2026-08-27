@@ -1,7 +1,8 @@
 [package]
 name = "pictor-read"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 pictor-core = { version = "0.1.0", path = "../pictor-core" }
+flate2 = { version = "1.1.9" }

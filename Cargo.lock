@@ -339,6 +339,7 @@ dependencies = [
 name = "pictor"
 version = "0.1.0"
 dependencies = [
+ "pictor-core",
  "pictor-read",
  "pictor-write",
 ]
@@ -351,6 +352,7 @@ version = "0.1.0"
 name = "pictor-read"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "pictor-core",
 ]
 

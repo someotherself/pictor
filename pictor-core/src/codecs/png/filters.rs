@@ -41,35 +41,25 @@ impl PngFilter {
     /// a = value of pos - 1
     /// b = value of pos - stride
     /// c = value of pos - 1 - stride
-    /// pos = position of byte being encoded
+    /// pos = position of the current byte
     #[inline]
-    pub fn paeth_encoding(a: u8, b: u8, c: u8) -> u8 {
-        let p = a.wrapping_add(b).wrapping_sub(c);
-        let pa = p.abs_diff(a);
-        let pb = p.abs_diff(b);
-        let pc = p.abs_diff(c);
-        if pa <= pb && pa <= pc {
-            a
-        } else if pb <= pc {
-            b
-        } else {
-            c
-        }
-    }
+    pub fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
+        let a = a as i32;
+        let b = b as i32;
+        let c = c as i32;
 
-    /// pixels: the entire payload
-    /// pos: the pixel we are currenty encoding
-    #[inline]
-    pub fn encode_first_byte(pixels: &[u8], pos: usize, filter: PngFilter, stride: usize) -> u8 {
-        let byte = pixels[pos];
-        match filter {
-            Self::None => byte,
-            Self::Sub => byte,
-            Self::Up => pixels[pos].wrapping_sub(pixels[pos - stride]),
-            Self::Average => pixels[pos].wrapping_sub(pixels[pos - stride] >> 1),
-            Self::Paeth => Self::paeth_encoding(0, pixels[pos - stride], 0),
-            Self::AverageFirstRow => byte,
-            Self::PaethFirstRow => byte,
+        let p = a.wrapping_add(b).wrapping_sub(c);
+
+        let pa = (p - a).abs();
+        let pb = (p - b).abs();
+        let pc = (p - c).abs();
+
+        if pa <= pb && pa <= pc {
+            a as u8
+        } else if pb <= pc {
+            b as u8
+        } else {
+            c as u8
         }
     }
 }

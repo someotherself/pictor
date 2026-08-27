@@ -4,10 +4,11 @@ use std::{
     path::Path,
 };
 
-use pictor_core::{codecs::color_type::ColorType, PictorResult};
-use tables::*;
-
-mod tables;
+use pictor_core::codecs::jpeg::tables::*;
+use pictor_core::{
+    PictorResult,
+    codecs::{color_type::ColorType, jpeg::JpegTables},
+};
 
 /// Maps a natural 8x8 block index to JPEG zigzag order.
 ///
@@ -21,39 +22,82 @@ mod tables;
 ///
 /// This table makes it easier to walk the image prioritizing the low frequency
 /// information, leaving as many zeroes as possible grouped together (the high freq info).
-const JPEG_ZIGZAG: [usize; 64] = [
+pub const JPEG_ZIGZAG: [usize; 64] = [
     0, 1, 5, 6, 14, 15, 27, 28, 2, 4, 7, 13, 16, 26, 29, 42, 3, 8, 12, 17, 25, 30, 41, 43, 9, 11,
     18, 24, 31, 40, 44, 53, 10, 19, 23, 32, 39, 45, 52, 54, 20, 22, 33, 38, 46, 51, 55, 60, 21, 34,
     37, 47, 50, 56, 59, 61, 35, 36, 48, 49, 57, 58, 62, 63,
 ];
 
-#[allow(dead_code)]
-pub struct EncodingRequest<'a> {
-    width: u16,
-    height: u16,
-    color_type: ColorType,
-    subsample: bool,
-    quality_factor: u32,
-    vertical_flip: bool,
-    data: &'a [u8],
+pub struct JpegEncodingRequest<'a> {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) color_type: ColorType,
+    pub(crate) subsample: bool,
+    pub(crate) quality_factor: u32,
+    pub(crate) vertical_flip: bool,
+    pub(crate) data: &'a [u8],
 }
 
-struct JpegTables {
-    /// Quantization table written to the DQT marker for the Y/luma component.
-    luma_quant: [u8; 64],
-    /// Quantization table written to the DQT marker for the Cb/Cr chroma components.
-    chroma_quant: [u8; 64],
-    /// Internal multiplier table used after DCT for the Y/luma component.
-    luma_quant_factors: [f32; 64],
-    /// Internal multiplier table used after DCT for the Cb/Cr chroma components.
-    chroma_quant_factors: [f32; 64],
-}
+impl<'a> JpegEncodingRequest<'a> {
+    #[inline]
+    pub fn width(&self) -> u16 {
+        self.width
+    }
 
-impl<'a> EncodingRequest<'a> {
-    pub fn encode<W: Write>(&self, dest: &mut W) -> PictorResult<()> {
+    #[inline]
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    #[inline]
+    pub fn color_type(&self) -> ColorType {
+        self.color_type
+    }
+
+    #[inline]
+    pub fn subsample(&self) -> bool {
+        self.subsample
+    }
+
+    #[inline]
+    pub fn quality_factor(&self) -> u32 {
+        self.quality_factor
+    }
+
+    #[inline]
+    pub fn vertical_flip(&self) -> bool {
+        self.vertical_flip
+    }
+
+    #[inline]
+    pub fn data(&self) -> &'a [u8] {
+        self.data
+    }
+
+    #[doc(hidden)]
+    pub fn new(
+        width: u16,
+        height: u16,
+        color_type: ColorType,
+        subsample: bool,
+        quality: u32,
+        data: &'a [u8],
+    ) -> Self {
+        Self {
+            width,
+            height,
+            color_type,
+            subsample,
+            quality_factor: quality,
+            vertical_flip: false,
+            data,
+        }
+    }
+
+    pub fn encode<W: Write>(&self, writer: &mut W) -> PictorResult<()> {
         let quant_tables = self.build_quant_tables();
 
-        let mut writer = BufWriter::new(dest);
+        let mut writer = BufWriter::new(writer);
         // Write the header
         self.init_soi_and_tables(&mut writer, &quant_tables)?;
         self.write_dct_huffman_tables(&mut writer)?;
@@ -61,12 +105,11 @@ impl<'a> EncodingRequest<'a> {
 
         let mut writer = JpegBitWriter::new(&mut writer);
 
-        // Comment
         let mut dc_y = 0_i32;
         let mut dc_u = 0_i32;
         let mut dc_v = 0_i32;
 
-        let comp = self.color_type.pixel_size() as usize;
+        let comp = self.color_type.comp_per_pix() as usize;
         let mut y: usize = 0; // height
         let chunk_size: usize = if self.subsample { 16 } else { 8 };
 
@@ -74,12 +117,9 @@ impl<'a> EncodingRequest<'a> {
             let mut x: usize = 0; // Width. Needs to be reset for each row
             while x < self.width as usize {
                 let table_size = chunk_size * chunk_size;
-                let mut y_table = Vec::new();
-                let mut u_table = Vec::new();
-                let mut v_table = Vec::new();
-                y_table.resize_with(table_size, || 0.0);
-                u_table.resize_with(table_size, || 0.0);
-                v_table.resize_with(table_size, || 0.0);
+                let mut y_table = vec![0.0; table_size]; // Y component plane
+                let mut u_table = vec![0.0; table_size]; // Cb component plane
+                let mut v_table = vec![0.0; table_size]; // Cr component plane
 
                 let mut row = y; // row in a JPEG block (16x16 or 8x8)
                 let mut pos: usize = 0;
@@ -122,6 +162,7 @@ impl<'a> EncodingRequest<'a> {
                 let mut sub_v = [0.0; 64];
 
                 if self.subsample {
+                    /* 4:2:0 MCU */
                     self.process_data_unit(
                         &mut writer,
                         &mut y_table, // top-left
@@ -198,6 +239,7 @@ impl<'a> EncodingRequest<'a> {
                         &UVAC_HT,
                     )?;
                 } else {
+                    /* 4:4:4 MCU */
                     self.process_data_unit(
                         &mut writer,
                         &mut y_table,
@@ -449,7 +491,7 @@ impl<'a> EncodingRequest<'a> {
     }
 
     fn index_rbd_data(&self, idx: usize) -> (f32, f32, f32) {
-        match self.color_type.pixel_size() {
+        match self.color_type.comp_per_pix() {
             1 | 2 => {
                 let y = self.data[idx] as f32;
                 (y, y, y)
@@ -541,7 +583,8 @@ impl<'a> EncodingRequest<'a> {
         // With units = 0, this is a pixel aspect ratio. 1:1 means square pixels.
         writer.write_all(&1_u16.to_be_bytes())?; // Xdensity: 1
         writer.write_all(&1_u16.to_be_bytes())?; // Ydensity: 1
-                                                 // Hoxizontal and vertical thumbnail pixel count. Can be zero
+
+        // Hoxizontal and vertical thumbnail pixel count. Can be zero
         writer.write_all(&0_u8.to_be_bytes())?; // X
         writer.write_all(&0_u8.to_be_bytes())?; // Y
 
@@ -550,7 +593,7 @@ impl<'a> EncodingRequest<'a> {
         // Length: Lq -> 0x0 0x84 (132 bytes, 64 * 2 tables + length fielt itself)
         // As big endian u16
         writer.write_all(&132_u16.to_be_bytes())?;
-        // Quantization table element precision. Pq  - 4 bits (ITU-T T.81)
+        // Quantization table element precision. Pq - 4 bits (ITU-T T.81)
         // 0 for 8-bit values
         // 1 for 16-bit values
         // Quantization table destination identifier. Tq - 4 bits (ITU-T T.81)
@@ -568,7 +611,7 @@ impl<'a> EncodingRequest<'a> {
 
     fn write_dct_huffman_tables<W: Write>(&self, writer: &mut BufWriter<W>) -> PictorResult<()> {
         // Baseline DCT
-        // SOF0 ->X’FFC0’ (ITU-T T.81)
+        // SOF0 -> X’FFC0’ (ITU-T T.81)
         writer.write_all(&[0xFF, 0xC0])?;
         // Frame header length: Lf
         writer.write_all(&17_u16.to_be_bytes())?;
@@ -579,7 +622,7 @@ impl<'a> EncodingRequest<'a> {
         writer.write_all(&self.height.to_be_bytes())?;
         // Width: X
         writer.write_all(&self.width.to_be_bytes())?;
-        // Image components in frame: Nf (Different than the input ColorType)
+        // Image components in frame: Nf (1 for greyscale, 3 for rgb)
         writer.write_all(&3_u8.to_be_bytes())?;
         // Component 1
         // Component identifier (id): Ci
@@ -595,7 +638,7 @@ impl<'a> EncodingRequest<'a> {
         writer.write_all(&[0])?;
         // Component 2
         writer.write_all(&[0x02, 0x11, 0x01])?; // Ci, Hi/Vi, Tqi
-                                                // Component 3
+        // Component 3
         writer.write_all(&[0x03, 0x11, 0x01])?; // Ci, Hi/Vi, Tqi
 
         // Define Huffman table
@@ -644,13 +687,16 @@ impl<'a> EncodingRequest<'a> {
         writer.write_all(&1_u8.to_be_bytes())?;
         // DC / AC entropy table destination id: Tdj / Taj (4 bits each)
         writer.write_all(&[0])?; // DC table 0, AC table 0
-                                 // Component 2 - Cb (blue-difference chroma component)
+
+        // Component 2 - Cb (blue-difference chroma component)
         writer.write_all(&2_u8.to_be_bytes())?;
         writer.write_all(&[0x11])?; // DC table 1, AC table 1
-                                    // Component 3 - Cr (red-difference chroma component)
+
+        // Component 3 - Cr (red-difference chroma component)
         writer.write_all(&3_u8.to_be_bytes())?;
         writer.write_all(&[0x11])?; // DC table 1, AC table 1
-                                    // Spectral selection start: Ss
+
+        // Spectral selection start: Ss
         writer.write_all(&[0])?;
         // Spectral selection end: Se
         writer.write_all(&[0x3F])?;
@@ -659,12 +705,6 @@ impl<'a> EncodingRequest<'a> {
 
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct HuffCode {
-    bits: u16,
-    len: u8,
 }
 
 struct JpegBitWriter<'a, W: Write> {
@@ -722,7 +762,6 @@ impl<'a, W: Write> JpegBitWriter<'a, W> {
     }
 }
 
-#[allow(dead_code)]
 pub struct JpegBuilder {
     width: u16,
     height: u16,
@@ -752,22 +791,21 @@ impl JpegBuilder {
         self
     }
 
-    pub fn create_request<'a>(&self, data: &'a [u8]) -> EncodingRequest<'a> {
+    pub fn create_request<'a>(&self, data: &'a [u8]) -> JpegEncodingRequest<'a> {
         let quality_factor = if self.quality < 50 {
             5000 / self.quality
         } else {
             200 - self.quality * 2
         };
         let subsample = self.quality <= 90;
-        EncodingRequest {
-            width: self.width,
-            height: self.height,
-            color_type: self.color_type,
+        JpegEncodingRequest::new(
+            self.width,
+            self.height,
+            self.color_type,
             subsample,
             quality_factor,
-            vertical_flip: self.vertical_flip,
             data,
-        }
+        )
     }
 
     pub fn encode_with<W: Write>(&self, data: &[u8], writer: &mut W) -> PictorResult<()> {
@@ -775,7 +813,7 @@ impl JpegBuilder {
         request.encode(writer)
     }
 
-    pub fn encode(&self, data: &[u8], path: &Path) -> PictorResult<()> {
+    pub fn encode<P: AsRef<Path>>(&self, data: &[u8], path: P) -> PictorResult<()> {
         let request = self.create_request(data);
         let mut file = std::fs::OpenOptions::new()
             .create(true)

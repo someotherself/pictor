@@ -3,14 +3,14 @@ use crate::PictorError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channels {
     Rbg,
-    Srbg,
+    Rbga,
 }
 
 impl Channels {
     pub const fn pixel_size(&self) -> u8 {
         match self {
             Self::Rbg => 3,
-            Self::Srbg => 4,
+            Self::Rbga => 4,
         }
     }
 }
@@ -21,7 +21,7 @@ impl TryFrom<u8> for Channels {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             3 => Ok(Self::Rbg),
-            4 => Ok(Self::Srbg),
+            4 => Ok(Self::Rbga),
             _ => Err(PictorError::InvalidArgument {
                 msg: "Invalid channels",
             }),
@@ -31,7 +31,7 @@ impl TryFrom<u8> for Channels {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorSpace {
-    Srbg, // // sRGB color, alpha linear
+    Srbg, // sRGB color, alpha linear
     Linear,
 }
 

@@ -36,14 +36,29 @@ impl QoiRbga {
         }
     }
 
-    pub fn set_values(&mut self, channels: Channels, data: &[u8]) {
-        self.r = data[0];
-        self.g = data[1];
-        self.b = data[2];
-        if channels.pixel_size() == 4 {
-            self.a = data[3];
-        } else {
-            self.a = 255;
+    pub fn set_values(&mut self, channels: u8, data: &[u8]) {
+        match channels {
+            3 | 4 => {
+                self.r = data[0];
+                self.g = data[1];
+                self.b = data[2];
+                if channels == 4 {
+                    self.a = data[3];
+                } else {
+                    self.a = 255;
+                }
+            }
+            1 | 2 => {
+                self.r = data[0];
+                self.g = data[0];
+                self.b = data[0];
+                if channels == 2 {
+                    self.a = data[1];
+                } else {
+                    self.a = 255;
+                }
+            }
+            _ => unreachable!(),
         }
     }
 
