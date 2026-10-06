@@ -1,4 +1,4 @@
-use std::{io::Write, marker::PhantomData, path::Path};
+use std::{io::Write, path::Path};
 
 use pictor_core::{
     PictorResult,
@@ -6,11 +6,11 @@ use pictor_core::{
         color_type::{BitDepth, ColorType},
         png::filters::PngFilter,
     },
-    samples::{Sample, SampleStorage},
+    samples::SampleStorage,
 };
 use pictor_write::codecs::png::{PngEncodingRequest, deflate::CompressionLevel};
 
-pub struct PngBuilderBorrowed<'a, S: Sample> {
+pub struct PngBuilderBorrowed<'a> {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) stride: Option<usize>,
@@ -18,11 +18,10 @@ pub struct PngBuilderBorrowed<'a, S: Sample> {
     pub(crate) color_type: ColorType,
     pub(crate) bit_depth: BitDepth,
     pub(crate) filter: Option<PngFilter>,
-    pub(crate) data: SampleStorage<'a, S>,
-    pub(crate) _format: PhantomData<S>,
+    pub(crate) data: SampleStorage<'a, u8>,
 }
 
-impl<'a, S: Sample> PngBuilderBorrowed<'a, S> {
+impl<'a> PngBuilderBorrowed<'a> {
     pub fn compression(&mut self, compression: CompressionLevel) -> &mut Self {
         self.compression = compression;
         self
@@ -47,6 +46,9 @@ impl<'a, S: Sample> PngBuilderBorrowed<'a, S> {
             self.width * self.color_type.comp_per_pix() as u32,
         )?);
 
+        // self.data in PngBuilderBorrowed and in PngEncodingRequest
+        // both carry the payload in bytes.
+        // We use self.bit_depth keeps the actualy format
         let req = PngEncodingRequest::new(
             self.width,
             self.height,

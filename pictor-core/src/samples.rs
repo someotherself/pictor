@@ -1,3 +1,8 @@
+/// Sample data that either borrows an existing slice or owns a `Vec`.
+///
+/// Borrowed storage avoids a copy when data can be reused as-is; owned storage
+/// holds data produced by a conversion. The stored elements may be sample values
+/// or bytes representing samples, depending on the codec.
 pub enum SampleStorage<'a, S: Sample> {
     Borrow { data: &'a [S] },
     Owned { data: Vec<S> },
@@ -69,20 +74,30 @@ mod sealed {
     impl Sealed for u16 {}
 }
 
+/// Helper trait samples types supported by the image codecs and conversions
 pub trait Sample: Copy + Sync + sealed::Sealed {
     const BYTES_PER_SAMPLE: usize;
     const BIT_DEPTH: u8;
 
     /// Used by image formats that expect be bytes, such as `PNG`
-    fn into_be_bytes<'a>(buffer: SampleStorage<'a, Self>) -> SampleStorage<'a, u8>;
+    fn into_be_bytes(buffer: SampleStorage<'_, Self>) -> SampleStorage<'_, u8>;
     /// Used for image formats that use be bytes, such as `PNG`
-    fn from_be_bytes<'a>(bytes: &'a [u8]) -> SampleStorage<'a, Self>;
+    fn from_be_bytes(bytes: &[u8]) -> SampleStorage<'_, Self>;
 
     fn downsample_to_u8_samples<'a>(input: SampleStorage<'a, Self>) -> SampleStorage<'a, u8>;
 
+    /// Helper for `downsample_to_u8_samples`
     #[inline]
     fn downsample_u16_to_u8(sample: u16) -> u8 {
         ((sample as u32 * 255 + 32767) / 65535) as u8
+    }
+
+    fn upsample_to_u16_samples<'a>(input: SampleStorage<'a, Self>) -> SampleStorage<'a, u16>;
+
+    /// Helper for `upsample_to_u16_samples`
+    #[inline]
+    fn upsample_u8_to_u16(sample: u8) -> u16 {
+        u16::from(sample) * 257
     }
 }
 
@@ -101,6 +116,17 @@ impl Sample for u8 {
     fn downsample_to_u8_samples<'a>(input: SampleStorage<'a, Self>) -> SampleStorage<'a, u8> {
         input
     }
+
+    fn upsample_to_u16_samples<'a>(input: SampleStorage<'a, Self>) -> SampleStorage<'a, u16> {
+        let data = input
+            .get_data()
+            .iter()
+            .copied()
+            .map(Self::upsample_u8_to_u16)
+            .collect();
+
+        SampleStorage::Owned { data }
+    }
 }
 
 impl Sample for u16 {
@@ -116,8 +142,19 @@ impl Sample for u16 {
         SampleStorage::Owned { data: out }
     }
 
-    fn from_be_bytes<'a>(_bytes: &'a [u8]) -> SampleStorage<'a, Self> {
-        todo!()
+    fn from_be_bytes(bytes: &[u8]) -> SampleStorage<'_, Self> {
+        assert_eq!(
+            bytes.len() % 2,
+            0,
+            "u16 samples require an even number of bytes"
+        );
+
+        let data = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
+
+        SampleStorage::Owned { data }
     }
 
     fn downsample_to_u8_samples<'a>(input: SampleStorage<'a, Self>) -> SampleStorage<'a, u8> {
@@ -133,6 +170,10 @@ impl Sample for u16 {
         };
 
         SampleStorage::Owned { data }
+    }
+
+    fn upsample_to_u16_samples<'a>(input: SampleStorage<'a, Self>) -> SampleStorage<'a, u16> {
+        input
     }
 }
 

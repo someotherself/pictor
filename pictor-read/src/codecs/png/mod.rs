@@ -10,7 +10,7 @@ use pictor_core::{
         color_type::{BitDepth, ColorType},
         png::{PNG_SIG, generate_crc},
     },
-    samples::SampleStorage,
+    samples::{Sample, SampleStorage},
 };
 
 pub mod filter;
@@ -145,6 +145,8 @@ impl PngDecodeRequest {
         result?;
 
         let inflated = Self::inflate(&payload)?;
+        // png filtering always works on bytes, not pixels
+        // regardless of bit depth, we save to u8 and convert to u16 later if needed
         let decoded = filter::remove_filter(self, &inflated)?;
 
         Ok(DecodedPng {
@@ -385,7 +387,6 @@ pub struct DecodedPng<'a> {
     pub bit_depth: BitDepth,
     pub pallete: Option<Vec<[u8; 3]>>,
     pub data: SampleStorage<'a, u8>,
-    // pub data: Vec<u8>, // Raw bytes
 }
 
 impl<'a> DecodedPng<'a> {
@@ -413,9 +414,20 @@ impl<'a> DecodedPng<'a> {
         &self.pallete
     }
 
-    pub fn to_u8(&self) {
-        let _ = self.data;
+    pub fn to_u8(&self) -> SampleStorage<'_, u8> {
+        match self.bit_depth() {
+            BitDepth::U8 => self.data.as_borrowed(),
+            BitDepth::U16 => {
+                let u16_samples = <u16 as Sample>::from_be_bytes(self.data.get_data());
+                <u16 as Sample>::downsample_to_u8_samples(u16_samples)
+            }
+        }
     }
 
-    pub fn to_u16(&self) {}
+    pub fn to_u16(&self) -> SampleStorage<'_, u16> {
+        match self.bit_depth() {
+            BitDepth::U8 => <u8 as Sample>::upsample_to_u16_samples(self.data.as_borrowed()),
+            BitDepth::U16 => <u16 as Sample>::from_be_bytes(self.data.get_data()),
+        }
+    }
 }
